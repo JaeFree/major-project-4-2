@@ -5,9 +5,14 @@ MQTT 토픽과 메시지(JSON) 형식.
   warehouse/scanner/{scanner_id}/scan    스캔 이벤트   QoS 1, retain X
   warehouse/scanner/{scanner_id}/status  상태          QoS 1, retain O
 
+  warehouse/db/result                    DB 저장 결과 QoS 1, retain X (3단계, db-writer가 발행)
+
 scan   {"v":1, "id":uuid, "scanner_id", "seq", "ts", "type", "data"}
 status {"v":1, "scanner_id", "state": online|offline|lost, "ts"}
   online : 연결됨 / offline : 정상 종료 / lost : 비정상 끊김 (브로커가 LWT로 대신 발행)
+result {"v":1, "result": inserted|duplicate|conflict, "ts", "id", "scanner_id", "seq", "type", "data"}
+       {"v":1, "result": rejected, "ts", "topic", "reason", "scanner_id"(토픽에서 알 수 있으면)}
+  ts는 db-writer가 처리한 시각. 표시 장치(UNO)는 오래된 결과를 버리는 데 쓴다.
 """
 import json
 import re
@@ -16,7 +21,9 @@ from datetime import datetime
 
 SCHEMA_VERSION = 1
 TOPIC_ROOT = "warehouse/scanner"
+RESULT_TOPIC = "warehouse/db/result"
 STATUS_STATES = ("online", "offline", "lost")
+RESULTS = ("inserted", "duplicate", "conflict", "rejected")
 
 # scanner_id는 토픽 단계와 MQTT 사용자 이름으로 쓰이므로 와일드카드(+, #)나 '/'가 들어가면 안 된다
 _SCANNER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -98,6 +105,43 @@ def parse_scan(payload):
             raise ValueError("data 길이 초과")
     except (KeyError, TypeError, AttributeError, ValueError) as e:
         raise ValueError(f"잘못된 scan 메시지 ({e})") from e
+    return msg
+
+
+def build_result(result, scan=None, topic=None, reason=None, scanner_id=None, ts=None):
+    """DB 저장 결과. scan 결과면 scan 메시지(dict)를, rejected면 topic·reason을 넣는다."""
+    if result not in RESULTS:
+        raise ValueError(f"알 수 없는 결과: {result}")
+    msg = {"v": SCHEMA_VERSION, "result": result, "ts": ts or now_iso()}
+    if result == "rejected":
+        msg.update(topic=str(topic), reason=str(reason)[:200])
+        if scanner_id:
+            msg["scanner_id"] = scanner_id
+    else:
+        msg.update({k: scan[k] for k in ("id", "scanner_id", "seq", "type", "data")})
+    return msg
+
+
+def parse_result(payload):
+    msg = _load(payload)
+    try:
+        if msg["result"] not in RESULTS:
+            raise ValueError("result")
+        datetime.fromisoformat(msg["ts"])
+        if msg["result"] == "rejected":
+            if not isinstance(msg["reason"], str):
+                raise ValueError("reason")
+            if "scanner_id" in msg:
+                validate_scanner_id(msg["scanner_id"])
+        else:
+            validate_scanner_id(msg["scanner_id"])
+            for key in ("type", "data"):
+                if not isinstance(msg[key], str):
+                    raise ValueError(key)
+            if not isinstance(msg["seq"], int):
+                raise ValueError("seq")
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"잘못된 result 메시지 ({e})") from e
     return msg
 
 

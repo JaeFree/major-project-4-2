@@ -62,6 +62,47 @@ def test_broker_crash_keeps_queued_messages(tmp_path, settings, kept):
         broker.stop()
 
 
+def test_three_processes_to_uno(tmp_path, images):
+    """스캐너 앱 → 브로커 → db-writer 앱 → uno-bridge 앱 → 가짜 UNO (실제 프로세스 3개, 설정은 명령줄)."""
+    from fake_uno import FakeUno
+    uno = FakeUno()
+    broker = make_secure_broker(tmp_path)
+    broker.start()
+    for user in ("dock-01", "db-writer", "uno-bridge"):
+        (tmp_path / f"{user}.pass").write_text(f"pw-{user}\n", encoding="utf-8")
+    db = tmp_path / "barcodes.db"
+    common = ["--host", "127.0.0.1", "--port", str(broker.port), "--keepalive", "5"]
+    procs = []
+    try:
+        w = start_process(["barcode_system.db_writer_app", *common, "--password-file",
+                           str(tmp_path / "db-writer.pass"), "--db", str(db),
+                           "--spool", str(tmp_path / "spool.jsonl")], tmp_path / "writer.log")
+        b = start_process(["barcode_system.uno_bridge_app", *common, "--password-file",
+                           str(tmp_path / "uno-bridge.pass"), "--serial-port", uno.url,
+                           "--ping-interval", "1"], tmp_path / "bridge.log")
+        procs += [w, b]
+        assert wait_until(lambda: "구독" in read_log(w) and "UNO 연결됨" in read_log(b), 15), \
+            read_log(w) + read_log(b)
+        s = start_process(scanner_args(images, broker.port, tmp_path / "outbox.db", "--password-file",
+                                       str(tmp_path / "dock-01.pass")), tmp_path / "scanner.log")
+        procs.append(s)
+        assert wait_until(lambda: len(uno.kinds("S")) >= 6, 30), read_log(s) + read_log(w) + read_log(b)
+        assert graceful_stop(s) == 0
+        assert wait_until(lambda: ["dock-01", "offline"] in [f[2:] for f in uno.kinds("T")], 10)
+        rows = query(db, "SELECT type, data FROM scans ORDER BY seq")
+        assert wait_until(lambda: len(uno.kinds("S")) == len(query(db, "SELECT id FROM scans")), 10)
+        assert {tuple(f[2:3] + f[4:5]) for f in uno.kinds("S")} == set(rows)   # (type, data)
+        assert ["dock-01", "online"] in [f[2:] for f in uno.kinds("T")]
+        for p in (b, w):
+            assert graceful_stop(p) == 0, read_log(p)
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                hard_kill(p)
+        broker.stop()
+        uno.close()
+
+
 def test_full_pipeline_with_process_crashes(tmp_path, images):
     broker = make_secure_broker(tmp_path, f"persistence true\npersistence_location {tmp_path.as_posix()}/\n"
                                 + "\n".join(pi_persistence_lines()) + "\n")

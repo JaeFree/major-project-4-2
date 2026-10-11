@@ -14,7 +14,7 @@ from docx.shared import Pt, RGBColor
 OUT = Path(__file__).resolve().parent / "설계서.docx"
 FONT = "맑은 고딕"
 MONO = "Consolas"
-DOC_VERSION = "2단계 완료판 (2026-10-11)"
+DOC_VERSION = "3단계 완료판 (2026-10-11)"
 
 
 # ================================================================ 서식 도우미
@@ -115,7 +115,7 @@ def overview(doc):
     table(doc, ["단계", "내용", "상태"], [
         ["1단계", "바코드 인식 → MQTT 발행", "완료 (Windows 로컬 검증. 파이·카메라 실측은 미검증)"],
         ["2단계", "MQTT 구독 → DB 저장", "완료 (Windows 로컬 검증. 파이 systemd 동작은 미검증)"],
-        ["3단계", "아두이노 UNO 연동", "예정"],
+        ["3단계", "아두이노 UNO 연동", "완료 (Windows 로컬 검증: 컴파일·가짜 UNO. 실제 보드는 미검증)"],
     ], widths=[50, 170, 230])
 
 
@@ -126,7 +126,9 @@ def environment(doc):
                             "Python 3.11.9 (D:\\Tools\\Python311), venv(.venv), requirements-dev.txt"],
         ["라즈베리파이4", "실제 실행 환경. OS 미정 → Bookworm(Python 3.11) 기준으로 작성. "
                          "apt: picamera2·libzbar0·mosquitto / pip(venv --system-site-packages): requirements-pi.txt"],
-        ["아두이노 UNO", "Arduino C++ 스케치. arduino-cli 1.5.1 + arduino:avr 1.8.8 (3단계)"],
+        ["아두이노 UNO", "Arduino C++ 스케치. arduino-cli 1.5.1 + arduino:avr 1.8.8 + LiquidCrystal I2C 1.1.2 "
+                        "(sketch.yaml 프로필). CH340/CH341 호환보드 예정. "
+                        "UNO 프로토콜 코드 PC 테스트용 w64devkit g++ 16.2 (D:\\Tools\\w64devkit)"],
         ["로컬 브로커", "Mosquitto 2.1.2 (D:\\Tools\\mosquitto). Windows 서비스는 수동 시작으로 두고, "
                        "테스트가 임시 포트로 직접 실행·종료한다"],
         ["버전 관리", "Git + GitHub 비공개 저장소 JaeFree/major-project-4-2"],
@@ -477,10 +479,152 @@ journalctl -u barcode-db-writer -f
     ])
 
 
-def next_steps(doc):
-    doc.add_heading("5. 다음 단계", 1)
+def stage3(doc):
+    doc.add_heading("5. 3단계: 아두이노 UNO 연동", 1)
+
+    doc.add_heading("5.1 브리지 필요성 검토", 2)
+    table(doc, ["방법", "장점", "단점", "판단"], [
+        ["A. 파이의 시리얼 브리지 (MQTT 구독 → USB 시리얼)", "추가 부품 없음. 인증·재연결·검증은 파이가, UNO는 표시만",
+         "파이 서비스 1개 추가", "채택"],
+        ["B. UNO에 이더넷/Wi-Fi 실드 + 직접 MQTT", "파이와 독립", "부품 구매, SRAM 2KB로 JSON·인증·재연결이 빠듯", "비권장"],
+        ["C. 스캐너 프로그램이 시리얼로 직접 전송", "단순", "스캐너와 UNO가 묶여 MQTT 구조의 의미가 없어짐", "비권장"],
+    ], widths=[130, 120, 130, 50])
+    para(doc, "결론: UNO에는 네트워크 기능이 없으므로 파이에서 MQTT를 받아 USB 시리얼로 넘기는 브리지(uno-bridge)가 필요하다.",
+         bold=True)
+
+    doc.add_heading("5.2 구현한 기능", 2)
     bullets(doc, [
-        ("3단계", "UNO는 네트워크가 없으므로 파이에서 MQTT를 구독해 USB 시리얼로 전달하는 브리지를 검토"),
+        ("DB 저장 결과 발행", "db-writer가 DB 반영 '뒤에' warehouse/db/result로 결과(inserted/duplicate/conflict/rejected) 발행 "
+                             "→ UNO 표시는 'DB에 실제로 저장됨'을 뜻한다"),
+        ("uno-bridge", "결과·스캐너 상태를 구독해 시리얼 프레임으로 변환·전송. 확인 응답·재전송, 포트 자동 검색(CH340/CH341/정품), "
+                       "USB 분리 후 재연결, UNO 리셋 감지 시 상태 재전송, 30초보다 오래된 결과는 표시 안 함"),
+        ("UNO 스케치", "I2C LCD 16x2(주소 자동 검색) + 초록/빨강 LED + 부저. 저장·거부·스캐너 lost·NO LINK 표시. "
+                      "LED·부저는 millis 타이머라 표시 중에도 수신이 멈추지 않음"),
+        ("시리얼 프로토콜", "한 줄 ASCII 프레임 + XOR 체크섬, 최대 63바이트. Python·C++ 양쪽 구현"),
+        ("ACL", "db-writer는 결과 토픽 쓰기, uno-bridge는 결과·상태 읽기 전용"),
+        ("자동 실행", "systemd 서비스(barcode-uno-bridge, dialout 그룹)"),
+    ])
+
+    doc.add_heading("5.3 구성 파일", 2)
+    table(doc, ["파일", "역할"], [
+        ["arduino/uno_display/uno_display.ino", "UNO 스케치 (표시·LED·부저·확인 응답)"],
+        ["arduino/uno_display/protocol.h", "프레임 수신(LineReader)·해석·생성. Arduino 기능 없이 작성 → PC에서도 빌드해 테스트"],
+        ["arduino/uno_display/pins.h", "배선·부품 설정 (핀, 부저 종류, LCD 주소 후보, 통신 속도)"],
+        ["arduino/uno_display/sketch.yaml", "arduino-cli 프로필: arduino:avr 1.8.8, LiquidCrystal I2C 1.1.2 고정"],
+        ["arduino/uno_display/README.md", "배선표, 컴파일·업로드, 단독 시험 방법"],
+        ["barcode_system/uno_protocol.py", "파이 쪽 프로토콜 구현"],
+        ["barcode_system/serial_bridge.py", "UnoLink(시리얼 연결), UnoBridge(MQTT → 표시 이벤트)"],
+        ["barcode_system/uno_bridge_app.py, config/uno_bridge.example.ini", "실행 진입점, 설정"],
+        ["barcode_system/subscriber.py, messages.py", "결과 발행 추가, result 메시지 형식"],
+        ["mosquitto/pi/acl", "uno-bridge 계정, db-writer 결과 쓰기 권한"],
+        ["deploy/systemd/barcode-uno-bridge.service", "자동 실행"],
+        ["docs/미검증.md", "1~3단계 미검증 항목과 확인 방법 모음"],
+    ], widths=[190, 260])
+
+    doc.add_heading("5.4 동작 방식", 2)
+    code(doc, """
+스캐너 → 브로커 → db-writer ─(DB commit 후 warehouse/db/result)─► 브로커 → uno-bridge ─USB 시리얼─► UNO
+                     스캐너 status (online/offline/lost, retain) ──────────────────┘
+""")
+    numbered(doc, [
+        "uno-bridge는 clean_session=True로 warehouse/db/result와 warehouse/scanner/+/status를 QoS 1로 구독한다. "
+        "표시는 기록이 아니므로 꺼져 있던 동안의 결과는 받지 않는다.",
+        "inserted → S 프레임, rejected → X 프레임, 상태 변화 → T 프레임으로 바꿔 큐에 넣는다. "
+        "duplicate/conflict는 같은 스캔의 재전달이라 표시하지 않는다.",
+        "결과의 ts(db-writer 처리 시각)가 30초보다 오래됐거나, 시리얼이 끊겨 큐에서 30초 넘게 기다린 결과는 버린다.",
+        "시리얼 포트를 열면 UNO가 리셋되므로 부팅 완료(R)를 최대 4초 기다린다. R이 없으면 P에 대한 확인으로 대신한다.",
+        "프레임마다 일련번호 n을 붙여 보내고 0.5초 안에 A|n이 없으면 최대 3번 다시 보낸다. 연속 실패·포트 오류는 다시 연결한다.",
+        "보낼 것이 없으면 5초마다 P를 보낸다. UNO는 12초 동안 아무것도 받지 못하면 NO LINK를 표시한다.",
+        "UNO가 다시 R을 보내면(리셋) 또는 재연결하면 알고 있는 스캐너 상태를 다시 보낸다.",
+    ])
+
+    doc.add_heading("5.5 시리얼 프로토콜", 2)
+    code(doc, """
+형식   <종류>|<필드>|...*<XOR 체크섬 16진 2자리>\\n   (줄바꿈 제외 최대 63바이트, 115200bps)
+파이→UNO  S|n|<type>|<scanner>|<data>     저장됨        예) S|2|EAN13|dock-01|8801234567893*34
+          X|n|<scanner>|<reason>          거부됨
+          T|n|<scanner>|<state>           스캐너 상태
+          P|n                             연결 확인     예) P|1*1D
+UNO→파이  R|uno-display|1                 부팅 완료
+          A|n                             수신 확인
+          E|CK / E|FMT / E|LEN            체크섬·형식 오류, 줄이 너무 김
+""")
+    bullets(doc, [
+        "필드에는 출력 가능한 ASCII만 쓴다. '|', '*', 한글 등은 '?'로 바꾼다 (LCD도 ASCII만 표시).",
+        "줄이 길면 마지막 필드(바코드 값·사유)를 자른다. UNO는 63바이트를 넘는 줄을 통째로 버리고 E|LEN을 보낸다.",
+        "UNO는 처리 전에 확인 응답을 보내 브리지의 불필요한 재전송을 막는다.",
+    ])
+
+    doc.add_heading("5.6 UNO 표시와 배선", 2)
+    table(doc, ["이벤트", "LCD", "LED / 부저"], [
+        ["저장됨", "1줄: 종류 스캐너 / 2줄: 바코드 값", "초록 0.3초 + 짧은 삐"],
+        ["거부됨", "REJECTED 스캐너 / 사유 (5초)", "빨강 빠른 깜빡임 + 긴 삐"],
+        ["스캐너 lost", "스캐너 / lost (3초)", "빨강 계속 켜짐 + 삐"],
+        ["브리지 끊김", "NO LINK / check bridge", "빨강 1초 주기 깜빡임"],
+    ], widths=[80, 200, 170])
+    table(doc, ["부품", "UNO 핀"], [
+        ["I2C LCD SDA / SCL", "A4 / A5 (VCC 5V), 주소 0x27·0x3F 자동 검색"],
+        ["초록 LED / 빨강 LED", "D5 / D6 (220~330Ω 직렬)"],
+        ["부저", "D8 (수동 부저 기본, 능동이면 pins.h의 BUZZER_PASSIVE 0)"],
+    ], widths=[150, 300])
+
+    doc.add_heading("5.7 사용 기술", 2)
+    table(doc, ["기술", "용도"], [
+        ["Arduino C++ (avr-gcc 7.3, C++11), arduino-cli 1.5.1 프로필", "UNO 스케치, 버전 고정 빌드"],
+        ["LiquidCrystal I2C 1.1.2, Wire(I2C)", "LCD 표시, 주소 자동 검색"],
+        ["UART 115200bps, 줄 단위 ASCII + XOR 체크섬, 확인 응답·재전송", "파이 ↔ UNO 통신"],
+        ["pyserial (serial_for_url, list_ports)", "시리얼 연결, USB VID:PID로 포트 검색, socket:// 시험"],
+        ["w64devkit g++ 16.2 (PC)", "UNO 프로토콜 코드(protocol.h)를 PC에서 빌드해 단위 테스트"],
+        ["MQTT clean session, retain 상태", "표시용 구독 (오래된 결과 무시, 현재 상태는 즉시 수신)"],
+    ], widths=[230, 220])
+
+    doc.add_heading("5.8 테스트 결과 (Windows, 2026-10-11)", 2)
+    para(doc, "전체 181개 통과 (paho-mqtt 2.1.0, 2회 반복 실행). MQTT 관련 66개는 paho-mqtt 1.6.1에서도 통과.", bold=True)
+    table(doc, ["테스트 파일", "개수", "확인 내용"], [
+        ["test_uno_protocol.py", "15", "프레임 생성·해석, 문자 치환, 길이 제한·자르기, 오류 거부"],
+        ["test_firmware.py", "3", "protocol.h C++ 단위 테스트(g++ -Wall -Wextra -Werror), Python↔C++ 대조(무작위 프레임 300여 줄 + "
+                                  "손상·CRLF·초과 길이), UNO 컴파일·메모리(Flash 9,724B/30%, SRAM 728B/35%)"],
+        ["test_serial_bridge.py", "12", "R 대기·확인, 확인 누락 시 재전송, R 없는 보드, 무응답, 잡음·리셋 감지, USB 분리·재연결, "
+                                        "포트 자동 검색, 결과·상태 → 프레임 변환, 오래된 결과 버림, 상태 재전송, "
+                                        "스캐너→db-writer→브리지→가짜 UNO 통합"],
+        ["test_subscriber.py (+1)", "10", "DB 반영 후 결과 발행, 발행 실패가 저장에 영향 없음"],
+        ["test_broker_security.py (+1)", "6", "결과 토픽은 db-writer만 쓰기 가능"],
+        ["test_pipeline.py (+1)", "4", "실제 프로세스 3개(스캐너·db-writer·브리지) + 가짜 UNO: UNO의 S 프레임 = DB 행"],
+    ], widths=[120, 35, 295])
+    para(doc, "가짜 UNO(tests/fake_uno.py): 실제 펌웨어와 같은 프로토콜로 응답하는 TCP 서버. 브리지는 pyserial의 "
+              "socket:// 주소로 COM 포트 대신 접속하므로, 확인 누락·재부팅·USB 분리·잡음을 하드웨어 없이 재현했다.")
+
+    doc.add_heading("5.9 발견한 오류와 수정", 2)
+    table(doc, ["오류", "원인", "수정"], [
+        ["UNO 컴파일 실패: invalid types 'int[int]' for array subscript",
+         "protocol.h의 배열 이름 HEX가 Arduino.h의 매크로 HEX(=16)와 충돌. PC용 g++ 빌드만으로는 드러나지 않음",
+         "HEX_DIGITS로 이름 변경. 테스트에서 PC 빌드와 UNO 컴파일을 모두 실행"],
+        ["Python 프로토콜 테스트 실패", "테스트 기대값 오류 ('한글\\t'은 3글자)", "기대값 수정 (구현은 정상)"],
+    ], widths=[150, 170, 130])
+
+    doc.add_heading("5.10 미검증 항목", 2)
+    para(doc, "UNO가 아직 없어(CH340 또는 CH341 호환보드 예정) 다음은 검증하지 못했다. 1~3단계 전체 목록과 확인 방법은 "
+              "docs/미검증.md에 모았다.")
+    bullets(doc, [
+        "실제 보드 업로드, CH340/CH341 드라이버·포트 자동 검색, 포트를 열 때의 리셋(R 수신)",
+        "115200bps 실제 통신 오류율 (문제가 있으면 양쪽을 57600으로)",
+        "LCD 주소 검색·표시, LED·부저 배선과 부저 종류, 표시 동작 전체",
+        "USB 케이블 실제 분리·재연결, 파이의 dialout 권한(systemd)",
+    ])
+
+    doc.add_heading("5.11 알려진 제약", 2)
+    bullets(doc, [
+        "표시는 기록이 아니다. 브리지·UNO가 꺼져 있던 동안의 저장 결과는 표시되지 않는다 (DB에는 저장됨).",
+        "db-writer가 결과를 발행하기 직전에 강제 종료되면 그 스캔은 다시 전달돼도 duplicate라 UNO에 표시되지 않을 수 있다.",
+        "UNO는 lost 상태 스캐너를 최대 4개까지 기억한다 (pins.h의 MAX_SCANNERS).",
+        "LCD 한 줄은 16자라 긴 바코드 값은 15자 + '~'로 표시된다.",
+    ])
+
+
+def next_steps(doc):
+    doc.add_heading("6. 다음 단계", 1)
+    bullets(doc, [
+        ("하드웨어 검증", "카메라·파이·UNO를 갖추면 docs/미검증.md 순서대로 확인하고 결과를 기록"),
         ("기말", "업무 규칙(입고·출고, 상품 정보) 추가, 바코드가 찍힌 물품을 관리하는 웹 페이지 (SQLite DB를 그대로 사용)"),
     ])
 
@@ -497,11 +641,13 @@ def build():
     table(doc, ["판", "날짜", "변경 내용"], [
         ["1단계", "2026-10-11", "환경 구성, 바코드 인식 → MQTT 발행 구현·테스트"],
         ["2단계", "2026-10-11", "MQTT 구독 → DB 저장, 관리 도구(삭제 포함), 브로커 영속성 변경, systemd"],
+        ["3단계", "2026-10-11", "UNO 연동(시리얼 브리지, 스케치, 프로토콜), DB 저장 결과 발행, 미검증 목록(docs/미검증.md)"],
     ], widths=[60, 80, 310])
     overview(doc)
     environment(doc)
     stage1(doc)
     stage2(doc)
+    stage3(doc)
     next_steps(doc)
     doc.save(OUT)
     print(f"생성: {OUT}")

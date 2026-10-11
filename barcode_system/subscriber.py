@@ -10,6 +10,8 @@ MQTT 구독 → DB 저장 (2단계 db-writer).
   - 보조 파일 기록까지 실패하면(디스크 고장 등) PUBACK을 보내기 전에 프로세스를 즉시 끝낸다(fail-stop).
     브로커가 메시지를 다시 보내고, systemd가 서비스를 재시작한다.
   - 같은 메시지가 여러 번 와도 scans.id(PRIMARY KEY)로 한 번만 저장된다.
+  - DB에 반영한 뒤 처리 결과(inserted/duplicate/conflict/rejected)를 warehouse/db/result로 발행한다
+    (3단계: UNO 표시는 'DB에 실제로 저장됨'을 뜻한다).
 
 검증
   - 형식이 틀린 메시지, 토픽의 scanner_id와 내용의 scanner_id가 다른 메시지(사칭)는
@@ -35,6 +37,14 @@ SPOOL_INTERVAL = 10.0            # 보조 파일 → DB 재처리 주기(초)
 FATAL_EXIT_CODE = 3
 
 
+def _is_scanner_id(s):
+    try:
+        messages.validate_scanner_id(s)
+        return True
+    except ValueError:
+        return False
+
+
 def fail_stop(code=FATAL_EXIT_CODE):
     """PUBACK을 보내기 전에 프로세스를 즉시 끝낸다 (finally·atexit도 실행하지 않음)."""
     logging.shutdown()
@@ -44,8 +54,9 @@ def fail_stop(code=FATAL_EXIT_CODE):
 class DbWriter:
     def __init__(self, store, spool, host, port=1883, username=None, password=None,
                  client_id="db-writer", keepalive=30, fatal=fail_stop, retry_delays=RETRY_DELAYS,
-                 spool_interval=SPOOL_INTERVAL):
+                 spool_interval=SPOOL_INTERVAL, publish_results=True):
         self.store, self.spool = store, spool
+        self.publish_results = publish_results
         self.host, self.port, self.keepalive = host, port, keepalive
         self.client_id = client_id
         self.fatal = fatal
@@ -122,12 +133,27 @@ class DbWriter:
             log.info("저장 [%s] %s (%s #%d)", msg["type"], msg["data"], msg["scanner_id"], msg["seq"])
         elif result == ScanStore.CONFLICT:
             log.warning("같은 id(%s)로 내용이 다른 메시지 — 기존 기록 유지", msg["id"])
+        self._publish_result(messages.build_result(result, scan=msg))
         return self._count(result)
 
     def _reject(self, topic, payload, reason, received_at):
         self.store.reject(topic, payload, reason, received_at)
         log.warning("거부: %s (%s)", topic, reason)
+        parts = topic.split("/")
+        scanner_id = parts[-2] if len(parts) >= 2 and _is_scanner_id(parts[-2]) else None
+        self._publish_result(messages.build_result("rejected", topic=topic, reason=reason,
+                                                   scanner_id=scanner_id))
         return self._count("rejected")
+
+    def _publish_result(self, result):
+        """DB에 반영한 '뒤에' 결과를 알린다 (3단계 UNO 표시용). 표시용이라 실패해도 기록에는 영향이 없다.
+        연결이 끊겨 있으면 paho가 메모리에 두었다가 재연결 후 보낸다 (받는 쪽이 오래된 결과는 버림)."""
+        if not self.publish_results:
+            return
+        try:
+            self._client.publish(messages.RESULT_TOPIC, messages.encode(result), qos=1)
+        except Exception as e:
+            log.debug("결과 발행 실패: %s", e)
 
     def _count(self, name):
         with self._stats_lock:

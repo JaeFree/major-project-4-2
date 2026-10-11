@@ -4,7 +4,8 @@
 #
 # 규칙
 #   - 스캐너는 MQTT 사용자 이름 = scanner_id 로 접속하고, 자기 토픽에만 쓸 수 있다 (%u = 사용자 이름)
-#   - 2단계 DB 저장 서비스(db-writer)는 모든 스캐너의 scan/status를 읽기만 한다
+#   - 2단계 DB 저장 서비스(db-writer)는 모든 스캐너의 scan/status를 읽고, 저장 결과만 쓴다
+#   - 3단계 UNO 브리지(uno-bridge)는 저장 결과와 스캐너 상태를 읽기만 한다
 #   - monitor는 점검용으로 warehouse/ 아래 전체를 읽기만 한다
 # 'pattern' 규칙은 모든 사용자에게 적용되므로 파일 맨 위(user 줄 이전)에 둔다.
 
@@ -13,6 +14,11 @@ pattern write warehouse/scanner/%u/status
 
 user db-writer
 topic read warehouse/scanner/+/scan
+topic read warehouse/scanner/+/status
+topic write warehouse/db/result
+
+user uno-bridge
+topic read warehouse/db/result
 topic read warehouse/scanner/+/status
 
 user monitor

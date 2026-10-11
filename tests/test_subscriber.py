@@ -54,6 +54,26 @@ def test_handle_classifies(store, tmp_path):
     assert store.scanners()[0]["state"] == "online"
 
 
+def test_results_published_after_db(store, tmp_path, monkeypatch):
+    """DB에 반영한 뒤 처리 결과를 warehouse/db/result로 발행 (3단계 UNO 표시용)."""
+    w = writer_for(store, tmp_path)
+    sent = []
+    monkeypatch.setattr(w._client, "publish",
+                        lambda topic, payload, qos=0: sent.append((topic, messages.parse_result(payload))))
+    r = "2026-10-11T00:00:00.000+00:00"
+    p = scan_payload()
+    w.handle(SCAN_T, p, r)
+    w.handle(SCAN_T, p, r)
+    w.handle(SCAN_T, b"not json", r)
+    w.handle(STATUS_T, messages.encode(messages.build_status("dock-01", "online")), r)
+    assert [t for t, _ in sent] == [messages.RESULT_TOPIC] * 3          # status는 결과 없음
+    assert [m["result"] for _, m in sent] == ["inserted", "duplicate", "rejected"]
+    assert sent[0][1]["id"] == messages.parse_scan(p)["id"]
+    assert sent[2][1]["scanner_id"] == "dock-01" and sent[2][1]["topic"] == SCAN_T
+    monkeypatch.setattr(w._client, "publish", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    assert w.handle(SCAN_T, scan_payload(seq=2), r) == "inserted"        # 발행 실패는 저장에 영향 없음
+
+
 def test_duplicate_and_conflict_counted(store, tmp_path):
     w = writer_for(store, tmp_path)
     p = scan_payload()

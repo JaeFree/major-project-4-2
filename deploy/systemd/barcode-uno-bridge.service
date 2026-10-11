@@ -1,0 +1,22 @@
+# MQTT → 아두이노 UNO 시리얼 브리지 (3단계)
+# deploy/install_services.sh 가 @USER@ / @DIR@ 을 바꿔 /etc/systemd/system/ 에 설치한다.
+[Unit]
+Description=Barcode system - MQTT to Arduino UNO serial bridge
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+# 시리얼 포트(/dev/ttyUSB*, /dev/ttyACM*) 접근 권한
+SupplementaryGroups=dialout
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/.venv/bin/python -m barcode_system.uno_bridge_app --config config/uno_bridge.ini
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

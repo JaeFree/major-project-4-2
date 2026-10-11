@@ -72,6 +72,23 @@ def test_acl_scanner_can_only_write_own_topics(secure_broker, collectors):
             c.disconnect()
 
 
+def test_acl_result_topic_writable_only_by_db_writer(secure_broker, collectors):
+    mon = collectors(secure_broker.host, secure_broker.port, messages.RESULT_TOPIC, **creds("monitor"))
+    mon.wait_ready()
+    clients = {u: raw_client(secure_broker, u) for u in ("db-writer", "uno-bridge", "dock-01")}
+    try:
+        for user, c in clients.items():
+            payload = messages.encode(messages.build_result("rejected", topic="t", reason=user))
+            c.publish(messages.RESULT_TOPIC, payload, qos=1).wait_for_publish(timeout=5)
+        assert wait_until(lambda: len(mon.raw()) >= 1)
+        time.sleep(0.5)
+        assert [messages.parse_result(p)["reason"] for _, p, _ in mon.raw()] == ["db-writer"]
+    finally:
+        for c in clients.values():
+            c.loop_stop()
+            c.disconnect()
+
+
 def test_publisher_with_auth_and_lwt(secure_broker, collectors, make_proxy, tmp_path):
     """실제 설정과 같은 방식(사용자 이름 = scanner_id)으로 발행하고, 비정상 끊김 시 LWT가 ACL을 통과하는지."""
     db = collectors(secure_broker.host, secure_broker.port, "warehouse/#", **creds("db-writer"))

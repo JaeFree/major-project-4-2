@@ -21,7 +21,7 @@ BROKER_CONF = ROOT / "mosquitto" / "local-test.conf"
 ACL_FILE = ROOT / "mosquitto" / "pi" / "acl"
 BROKER_HOST = "127.0.0.1"
 BROKER_PORT = 18830
-SECURE_USERS = ("dock-01", "dock-02", "db-writer", "monitor")
+SECURE_USERS = ("dock-01", "dock-02", "db-writer", "uno-bridge", "monitor")
 
 
 def find_mosquitto(name="mosquitto"):
