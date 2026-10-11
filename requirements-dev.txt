@@ -15,3 +15,4 @@ pyserial>=3.5,<4
 python-docx>=1.1,<2
 pytest>=8,<9
 pytest-timeout>=2.3,<3
+python-barcode[images]>=0.15,<1   # 테스트용 합성 바코드(Code128/Code39 등) 생성. Pillow 포함. 파이에는 불필요

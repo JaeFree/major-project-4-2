@@ -10,6 +10,16 @@ __pycache__/
 *.db-shm
 *.csv
 outbox/
+data/
+
+# 실제 설정과 비밀번호 (예시 파일만 올린다)
+config/*.ini
+!config/*.example.ini
+*.pass
+mosquitto/pi/passwd
+
+# paho-mqtt 1.x 호환성 테스트용 패키지 (scripts/test_paho1.ps1)
+.paho1/
 
 # 아두이노 빌드 결과
 arduino/**/build/

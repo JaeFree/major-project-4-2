@@ -1,0 +1,19 @@
+# 물류창고 바코드 시스템 — Mosquitto ACL
+# 설치 위치: /etc/mosquitto/acl   (setup_broker.sh가 복사)
+# Windows 로컬 테스트(tests/test_broker_security.py)도 이 파일을 그대로 사용한다.
+#
+# 규칙
+#   - 스캐너는 MQTT 사용자 이름 = scanner_id 로 접속하고, 자기 토픽에만 쓸 수 있다 (%u = 사용자 이름)
+#   - 2단계 DB 저장 서비스(db-writer)는 모든 스캐너의 scan/status를 읽기만 한다
+#   - monitor는 점검용으로 warehouse/ 아래 전체를 읽기만 한다
+# 'pattern' 규칙은 모든 사용자에게 적용되므로 파일 맨 위(user 줄 이전)에 둔다.
+
+pattern write warehouse/scanner/%u/scan
+pattern write warehouse/scanner/%u/status
+
+user db-writer
+topic read warehouse/scanner/+/scan
+topic read warehouse/scanner/+/status
+
+user monitor
+topic read warehouse/#
