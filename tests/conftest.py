@@ -47,6 +47,24 @@ def free_port():
         return s.getsockname()[1]
 
 
+EAN = "8801234567893"   # images 픽스처에 들어가는 바코드 값
+LOC = "LOC-A01-03"
+
+
+@pytest.fixture
+def images(tmp_path):
+    """이미지 폴더 카메라용: EAN-13 1장 + Code128 1장."""
+    import cv2
+    from barcode_images import camera_like, ean13_image, symbol_image
+    d = tmp_path / "images"
+    d.mkdir()
+    expected, img = ean13_image(EAN[:12])
+    assert expected == EAN
+    cv2.imwrite(str(d / "1_ean13.png"), camera_like(img, blur=5))
+    cv2.imwrite(str(d / "2_code128.png"), camera_like(symbol_image("code128", LOC)))
+    return d
+
+
 def wait_until(pred, timeout=10.0, interval=0.05):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -111,21 +129,26 @@ def anon_broker(tmp_path):
     b.stop()
 
 
-@pytest.fixture
-def secure_broker(tmp_path):
-    """파이용 ACL 파일(mosquitto/pi/acl)을 그대로 쓰는 인증 브로커. 비밀번호는 'pw-<사용자>'."""
+def make_secure_broker(tmp_path, persistence="persistence false\n", name="secure"):
+    """파이용 ACL 파일(mosquitto/pi/acl)을 그대로 쓰는 인증 브로커 (시작 전 상태로 반환).
+    비밀번호는 'pw-<사용자>'. persistence에 영속성 관련 설정 줄을 넣을 수 있다."""
     exe, passwd_exe = find_mosquitto(), find_mosquitto("mosquitto_passwd")
     if exe is None or passwd_exe is None:
         pytest.skip("mosquitto / mosquitto_passwd 실행 파일을 찾을 수 없습니다")
-    passwd = tmp_path / "passwd"
+    passwd = tmp_path / f"{name}.passwd"
     for i, user in enumerate(SECURE_USERS):
         args = [passwd_exe, "-b"] + (["-c"] if i == 0 else []) + [str(passwd), user, f"pw-{user}"]
         subprocess.run(args, check=True, capture_output=True)
     port = free_port()
-    conf = _write_conf(tmp_path / "secure.conf", port,
-                       "per_listener_settings false\nallow_anonymous false\npersistence false\n"
+    conf = _write_conf(tmp_path / f"{name}.conf", port,
+                       "per_listener_settings false\nallow_anonymous false\n" + persistence +
                        f"password_file {passwd.as_posix()}\nacl_file {ACL_FILE.as_posix()}\n")
-    b = Broker(conf, port)
+    return Broker(conf, port)
+
+
+@pytest.fixture
+def secure_broker(tmp_path):
+    b = make_secure_broker(tmp_path)
     b.start()
     yield b
     b.stop()

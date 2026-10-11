@@ -1,0 +1,22 @@
+# MQTT 구독 → DB 저장 서비스 (2단계)
+# deploy/install_services.sh 가 @USER@ / @DIR@ 을 바꿔 /etc/systemd/system/ 에 설치한다.
+[Unit]
+Description=Barcode system - MQTT to SQLite writer
+After=network-online.target mosquitto.service
+Wants=network-online.target mosquitto.service
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/.venv/bin/python -m barcode_system.db_writer_app --config config/db_writer.ini
+# 비정상 종료(종료 코드 3: DB와 보조 파일 모두 기록 실패 포함) 시 3초 뒤 재시작
+Restart=always
+RestartSec=3
+# 정상 종료: SIGTERM → 연결 해제(영속 세션 유지) 후 종료
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

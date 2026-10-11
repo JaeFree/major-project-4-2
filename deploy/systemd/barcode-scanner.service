@@ -1,0 +1,23 @@
+# 바코드 스캐너 → MQTT 발행 서비스 (1단계)
+# deploy/install_services.sh 가 @USER@ / @DIR@ 을 바꿔 /etc/systemd/system/ 에 설치한다.
+[Unit]
+Description=Barcode system - camera scanner to MQTT
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+# 카메라 장치(/dev/video*, Pi 카메라) 접근 권한
+SupplementaryGroups=video
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/.venv/bin/python -m barcode_system.scanner_app --config config/scanner.ini
+Restart=always
+RestartSec=3
+# 정상 종료: SIGTERM → 남은 메시지 전송(최대 2초) 후 offline 발행
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -8,15 +8,13 @@
 비밀번호는 명령줄에 쓰지 않는다 (ps 명령·셸 기록에 남음).
   [mqtt] password_file 의 첫 줄, 없으면 환경 변수 BARCODE_MQTT_PASSWORD
 """
-import argparse
-import configparser
 import logging
-import os
 import sys
 import threading
 
 from . import messages
 from .camera import BACKEND_CHOICES, CAMERA_KINDS, open_camera
+from .config import bool_value, build_parser, read_password, resolve, setup_logging
 from .decoding import ENGINE_CHOICES, BarcodeReader
 from .outbox import Outbox
 from .publisher import Publisher
@@ -26,18 +24,6 @@ from .tracker import ScanTracker
 log = logging.getLogger("barcode")
 
 PASSWORD_ENV = "BARCODE_MQTT_PASSWORD"
-
-
-def _bool(v):
-    if isinstance(v, bool):
-        return v
-    s = str(v).strip().lower()
-    if s in ("1", "true", "yes", "on"):
-        return True
-    if s in ("0", "false", "no", "off", ""):
-        return False
-    raise ValueError(f"참/거짓 값이 아닙니다: {v!r}")
-
 
 # (INI 섹션, 키, 명령줄 옵션, 형, 기본값, 선택지, 도움말)
 OPTIONS = [
@@ -54,7 +40,7 @@ OPTIONS = [
      "interval: 계속 보이면 cooldown마다 재발행 / presence: 나타날 때마다 1회"),
     ("scanner", "cooldown", "--cooldown", float, 3.0, None, "초"),
     ("scanner", "confirm", "--confirm", int, 2, None, "발행 전에 필요한 연속 인식 횟수"),
-    ("scanner", "show", "--show", _bool, False, None, "미리보기 창 (true/false)"),
+    ("scanner", "show", "--show", bool_value, False, None, "미리보기 창 (true/false)"),
     ("mqtt", "host", "--host", str, "127.0.0.1", None, "브로커 주소"),
     ("mqtt", "port", "--port", int, 1883, None, None),
     ("mqtt", "username", "--username", str, None, None, "비우면 스캐너 ID를 사용"),
@@ -66,32 +52,8 @@ OPTIONS = [
 
 
 def load_config(argv=None):
-    ap = argparse.ArgumentParser(description="Barcode scanner → MQTT publisher")
-    ap.add_argument("--config", help="INI 설정 파일 (config/scanner.example.ini 참조)")
-    ap.add_argument("--debug", action="store_true", help="상세 로그 출력")
-    for section, key, flag, typ, default, choices, help_ in OPTIONS:
-        ap.add_argument(flag, dest=f"{section}_{key}", type=typ, choices=choices, default=None,
-                        metavar=None if choices else key.upper(),
-                        help=(help_ + " " if help_ else "") + f"(기본 {default})")
-    args = ap.parse_args(argv)
-
-    ini = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
-    if args.config:
-        if not ini.read(args.config, encoding="utf-8"):
-            ap.error(f"설정 파일을 읽을 수 없습니다: {args.config}")
-
-    cfg = argparse.Namespace(debug=args.debug)
-    for section, key, flag, typ, default, choices, _ in OPTIONS:
-        value = getattr(args, f"{section}_{key}")
-        if value is None and ini.has_option(section, key) and ini.get(section, key).strip():
-            raw = ini.get(section, key).strip()
-            try:
-                value = typ(raw)
-            except ValueError:
-                ap.error(f"설정 파일 [{section}] {key} 값이 잘못됐습니다: {raw!r}")
-            if choices and value not in choices:
-                ap.error(f"설정 파일 [{section}] {key}는 {choices} 중 하나여야 합니다: {raw!r}")
-        setattr(cfg, f"{section}_{key}", default if value is None else value)
+    ap = build_parser("Barcode scanner → MQTT publisher", OPTIONS)
+    cfg = resolve(ap, ap.parse_args(argv), OPTIONS)
 
     if not cfg.scanner_id:
         ap.error("스캐너 ID가 필요합니다 (--id 또는 [scanner] id)")
@@ -111,25 +73,13 @@ def load_config(argv=None):
         ap.error("--camera files에는 --images 폴더가 필요합니다.")
 
     cfg.mqtt_username = cfg.mqtt_username or cfg.scanner_id
-    cfg.mqtt_password = _read_password(ap, cfg.mqtt_password_file)
+    cfg.mqtt_password = read_password(ap, cfg.mqtt_password_file, PASSWORD_ENV)
     return cfg
-
-
-def _read_password(ap, path):
-    if path:
-        try:
-            with open(path, encoding="utf-8") as f:
-                return f.readline().rstrip("\r\n")
-        except OSError as e:
-            ap.error(f"비밀번호 파일을 읽을 수 없습니다: {e}")
-    return os.environ.get(PASSWORD_ENV)
 
 
 def main(argv=None):
     cfg = load_config(argv)
-    logging.basicConfig(level=logging.DEBUG if cfg.debug else logging.INFO,
-                        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-                        datefmt="%H:%M:%S")
+    setup_logging(cfg.debug)
     stop_event = threading.Event()
     install_stop_signals(stop_event)
 

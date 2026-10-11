@@ -17,7 +17,7 @@ try {
     & $py -c "import paho.mqtt, sys; v = paho.mqtt.__version__; print('paho-mqtt', v); sys.exit(0 if v.startswith('1.') else 1)"
     if ($LASTEXITCODE -ne 0) { throw ".paho1의 paho-mqtt 1.x가 로드되지 않았습니다" }
     Push-Location $root
-    & $py -m pytest -q tests/test_env.py tests/test_publisher.py tests/test_broker_security.py tests/test_scanner_app.py @args
+    & $py -m pytest -q tests/test_env.py tests/test_publisher.py tests/test_broker_security.py tests/test_scanner_app.py tests/test_subscriber.py tests/test_pipeline.py tests/test_db_tool.py @args
     $code = $LASTEXITCODE
     Pop-Location
     exit $code

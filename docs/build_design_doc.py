@@ -14,7 +14,7 @@ from docx.shared import Pt, RGBColor
 OUT = Path(__file__).resolve().parent / "설계서.docx"
 FONT = "맑은 고딕"
 MONO = "Consolas"
-DOC_VERSION = "1단계 완료판 (2026-10-11)"
+DOC_VERSION = "2단계 완료판 (2026-10-11)"
 
 
 # ================================================================ 서식 도우미
@@ -114,7 +114,7 @@ def overview(doc):
     doc.add_heading("1.2 단계별 진행 현황", 2)
     table(doc, ["단계", "내용", "상태"], [
         ["1단계", "바코드 인식 → MQTT 발행", "완료 (Windows 로컬 검증. 파이·카메라 실측은 미검증)"],
-        ["2단계", "MQTT 구독 → DB 저장", "예정"],
+        ["2단계", "MQTT 구독 → DB 저장", "완료 (Windows 로컬 검증. 파이 systemd 동작은 미검증)"],
         ["3단계", "아두이노 UNO 연동", "예정"],
     ], widths=[50, 170, 230])
 
@@ -212,7 +212,8 @@ status {"v":1,"scanner_id":"dock-01","state":"online","ts":"2026-10-11T20:40:00.
     doc.add_heading("3.5 브로커(Mosquitto) 설정", 2)
     bullets(doc, [
         ("인증", "allow_anonymous false, password_file. 사용자는 setup_broker.sh가 비밀번호를 입력받아 등록"),
-        ("영속성", "persistence true(데비안 기본), autosave_interval 60초, max_queued_messages 100000"),
+        ("영속성", "persistence true(데비안 기본), max_queued_messages 100000. "
+                   "저장 주기는 1단계에서 60초였고 2단계에서 '변경할 때마다'로 바꿨다(4.5 참조)"),
         ("크기 제한", "message_size_limit 64KB"),
         ("TLS", "이번 단계 미적용 (내부망 전제). 필요 시 8883 리스너로 추가"),
     ])
@@ -306,19 +307,181 @@ python -m barcode_system.scanner_app --id dock-01 --camera files --images sample
         "MQTT 3.1.1에서는 ACL로 거부된 발행도 PUBACK을 받아 스캐너는 전송 성공으로 기록한다. "
         "사용자 이름과 scanner_id가 다르면 경고를 출력한다.",
         "ACL의 pattern 규칙은 모든 사용자에 적용되어 db-writer·monitor도 warehouse/scanner/<자기 이름>/... 에 쓸 수 있다. "
-        "2단계 구독자는 토픽의 scanner_id와 메시지의 scanner_id가 같은지 확인한다.",
-        "브로커가 비정상 종료되면 마지막 자동 저장(60초) 이후의 브로커 내부 큐를 잃을 수 있다. "
-        "스캐너 쪽은 PUBACK 기준이라 영향이 없지만, 구독자가 오래 끊겨 있을 때는 영향이 있으므로 2단계에서 검토한다.",
+        "→ 2단계 db-writer가 토픽의 scanner_id와 메시지의 scanner_id가 다르면 저장하지 않고 rejected에 남긴다.",
+        "브로커가 비정상 종료되면 마지막 자동 저장(60초) 이후의 브로커 내부 큐를 잃을 수 있었다. "
+        "→ 2단계에서 '변경할 때마다 저장'으로 바꾸고 테스트로 확인했다 (4.5).",
         "시각(ts)은 파이 시계 기준이다. NTP 동기화 전 스캔은 시각이 틀릴 수 있다.",
     ])
 
 
-def next_steps(doc):
-    doc.add_heading("4. 다음 단계", 1)
+def stage2(doc):
+    doc.add_heading("4. 2단계: MQTT 구독 → DB 저장", 1)
+
+    doc.add_heading("4.1 구현한 기능", 2)
     bullets(doc, [
-        ("2단계", "db-writer가 영속 세션(QoS 1)으로 scan을 구독해 DB에 저장. id UNIQUE로 중복 제거, "
-                  "seq로 누락 확인, 수신 시각 기록, status로 스캐너 상태 관리"),
+        ("DB 저장 서비스(db-writer)", "모든 스캐너의 scan·status를 구독해 SQLite에 스캔 원본을 기록 (파이에서 상시 실행)"),
+        ("유실 방지", "영속 세션 + QoS 1 + 'DB commit 후 PUBACK'. db-writer가 꺼져 있던 동안의 메시지도 다시 켜면 저장"),
+        ("중복 제거", "scans.id(uuid)를 PRIMARY KEY로 → 재전송·중복 발행이 와도 1행"),
+        ("검증·사칭 차단", "형식 오류, 알 수 없는 토픽, 토픽과 내용의 scanner_id 불일치 → rejected 테이블에 원본·사유 보관"),
+        ("DB 장애 대비", "재시도 → 보조 파일(JSONL) → 주기적으로 DB 반영. 둘 다 실패하면 PUBACK 전에 종료(fail-stop)"),
+        ("스캐너 상태", "scanners 테이블: online/offline/lost, 마지막 수신 시각, 마지막 seq, 건수"),
+        ("관리 도구(db_tool)", "스캔 조회, 스캐너 상태, seq 누락 구간, 거부 메시지, CSV 내보내기, 삭제(미리보기·백업)"),
+        ("자동 실행", "systemd 서비스(db-writer, scanner)와 설치 스크립트"),
+    ])
+
+    doc.add_heading("4.2 구성 모듈", 2)
+    table(doc, ["파일", "역할"], [
+        ["barcode_system/store.py", "DB 스키마, 저장(중복 제거), 상태 갱신, 거부 기록, 조회, 누락 구간, 삭제·백업"],
+        ["barcode_system/spool.py", "DB 기록 실패 시 보조 파일 (fsync, 원자적 교체)"],
+        ["barcode_system/subscriber.py", "DbWriter: 영속 세션 구독, 메시지 분류, 재시도·보조 파일·fail-stop"],
+        ["barcode_system/db_writer_app.py", "실행 진입점, 설정"],
+        ["barcode_system/db_tool.py", "관리 도구 (조회·내보내기·삭제)"],
+        ["barcode_system/config.py", "스캐너·db-writer 공용 설정 처리 (명령줄 > INI > 기본값)"],
+        ["config/db_writer.example.ini", "설정 예시"],
+        ["deploy/systemd/*.service, deploy/install_services.sh", "부팅 시 자동 실행, 비정상 종료 시 재시작"],
+        ["mosquitto/pi/barcode.conf", "영속성 저장 주기 변경, 영속 세션 만료 기간 추가"],
+    ], widths=[170, 280])
+
+    doc.add_heading("4.3 동작 방식", 2)
+    numbered(doc, [
+        "db-writer는 고정 client id(db-writer)와 clean_session=False로 접속해 warehouse/scanner/+/scan, "
+        "+/status를 QoS 1로 구독한다. 브로커는 이 세션을 기억하고, db-writer가 꺼져 있는 동안 온 메시지를 보관한다.",
+        "메시지를 받으면 토픽 모양 → JSON 형식 → 토픽과 내용의 scanner_id 일치 순서로 검증한다. 실패하면 rejected에 기록.",
+        "scan은 INSERT OR IGNORE로 저장한다. 이미 같은 id가 있으면 '중복'(내용이 다르면 '충돌' 경고)으로 센다.",
+        "status는 받은 순서대로 scanners에 반영한다. LWT(lost)의 ts는 연결할 때 미리 만든 값이라 실제 끊긴 시각보다 "
+        "이르므로, ts 비교 대신 수신 순서와 수신 시각(state_at)을 쓴다.",
+        "paho는 on_message 콜백이 끝난 뒤 PUBACK을 보낸다(1.x·2.x 동일). 콜백 안에서 commit까지 끝내므로 "
+        "기록 전에 죽으면 브로커가 같은 메시지를 다시 보낸다.",
+        "DB가 잠겨 있으면 0.1·0.5·1초 간격으로 재시도하고, 그래도 실패하면 보조 파일에 fsync로 남긴다. "
+        "보조 파일은 10초마다 DB로 옮긴다(시작·종료 때도).",
+        "보조 파일까지 실패하면 PUBACK을 보내기 전에 프로세스를 즉시 종료(종료 코드 3)하고, systemd가 3초 뒤 재시작한다.",
+    ])
+    para(doc, "결과적으로 스캐너 outbox → 브로커 → DB 전 구간이 at-least-once 전달 + id 기준 중복 제거 = "
+              "'정확히 한 번 반영'이 된다.", bold=True)
+
+    doc.add_heading("4.4 DB 구조 (SQLite, WAL, 스키마 버전 1)", 2)
+    table(doc, ["테이블", "컬럼", "설명"], [
+        ["scans", "id (PK)", "메시지 uuid — 중복 제거 키"],
+        ["", "scanner_id, seq", "스캐너와 일련번호 (누락 확인)"],
+        ["", "type, data", "바코드 종류(ZBar 표기)와 값"],
+        ["", "scanned_at", "스캔 시각(UTC로 변환) — 정렬·기간 조회·삭제 기준"],
+        ["", "scan_ts", "스캐너가 보낸 원래 시각 문자열(시간대 포함)"],
+        ["", "received_at", "db-writer 수신 시각(UTC) — 파이에 RTC가 없어 스캐너 시각이 틀릴 때 대비"],
+        ["scanners", "scanner_id (PK), state, state_at, last_scan_at, last_seq", "스캐너별 현재 상태"],
+        ["rejected", "topic, payload, reason, received_at", "거부된 메시지 원본과 사유"],
+    ], widths=[60, 170, 220])
+    bullets(doc, [
+        "인덱스: data(바코드 조회), scanned_at(기간), (scanner_id, seq)(누락 확인)",
+        "WAL 모드라 나중에 만들 웹 페이지가 읽는 중에도 기록이 막히지 않는다 (테스트로 확인).",
+        "PRAGMA user_version = 1. 기말에 업무 규칙(입고·출고, 상품 정보 등) 테이블을 추가할 때 버전을 올려 이전한다. "
+        "프로그램보다 새 버전의 DB는 열지 않는다.",
+        "모든 시각은 'YYYY-MM-DDTHH:MM:SS.mmm+00:00' 형식이라 문자열 비교로 정렬된다.",
+    ])
+
+    doc.add_heading("4.5 브로커 영속성 변경", 2)
+    para(doc, "autosave_on_changes true + autosave_interval 1 (메시지가 바뀔 때마다 디스크 저장), "
+              "persistent_client_expiration 30d 추가.")
+    bullets(doc, [
+        "이유: 스캐너는 브로커의 PUBACK을 받으면 전송 완료로 처리한다. db-writer가 꺼져 있는 동안 브로커에 쌓인 메시지는 "
+        "브로커가 비정상 종료되면 되살릴 곳이 없다.",
+        "검증: 같은 시나리오(db-writer 정지 → 10건 발행 → 브로커 강제 종료 → 재시작)에서 새 설정은 10건 모두 저장, "
+        "이전 설정(60초)은 0건 — 대조 테스트로 설정 변경의 효과를 확인.",
+        "비용: 저장 때마다 브로커 DB 파일 전체를 다시 쓴다. 창고 스캔량(초당 수 건 이하)에서는 부담이 작고, "
+        "많아지면 autosave_interval을 키운다(예: 100). 나중에 조정 가능.",
+    ])
+
+    doc.add_heading("4.6 관리 도구와 삭제 기능", 2)
+    code(doc, r"""
+python -m barcode_system.db_tool scans --limit 20 [--scanner dock-01] [--data 880...] [--since 2026-10-01]
+python -m barcode_system.db_tool scanners          # 스캐너별 상태·건수
+python -m barcode_system.db_tool gaps              # seq 빈 번호 구간 (누락 의심)
+python -m barcode_system.db_tool rejected          # 거부된 메시지
+python -m barcode_system.db_tool export out.csv --since 2026-10-01     # Excel용 UTF-8(BOM)
+python -m barcode_system.db_tool delete --before 2026-10-01            # 미리보기: 지울 건수만 표시
+python -m barcode_system.db_tool delete --before 2026-10-01 --yes --backup data/backup.db [--vacuum]
+python -m barcode_system.db_tool delete --all --yes                    # 전체 삭제
+python -m barcode_system.db_tool delete --rejected --yes               # 거부 기록 삭제
+""")
+    bullets(doc, [
+        "기록은 무기한 보관하고, 삭제는 사람이 명령할 때만 한다.",
+        "삭제 조건: --before/--until, --since, --scanner, --data, --id(여러 개). 조건 없이 지우려면 --all이 필요하다.",
+        "기본은 미리보기이고 --yes를 붙여야 실제로 지운다. --backup은 실행 중에도 일관된 복사본을 만든다(SQLite 백업 API).",
+        "DB 파일이 없으면 오류로 끝낸다(경로를 잘못 써서 빈 DB가 생기는 것 방지). db-writer 실행 중에도 사용할 수 있다.",
+        "지운 seq 구간은 gaps에서 빈 번호로 보인다. 삭제 직후 브로커가 같은 메시지를 다시 보내면(드묾) 그 행은 다시 생길 수 있다.",
+    ])
+
+    doc.add_heading("4.7 설정과 실행", 2)
+    code(doc, r"""
+# 파이: 브로커 사용자 등록 (스캐너, db-writer, monitor)
+sudo mosquitto/pi/setup_broker.sh dock-01 db-writer monitor
+# 설정: config/db_writer.example.ini → config/db_writer.ini, 비밀번호 파일 config/db-writer.pass
+python -m barcode_system.db_writer_app --config config/db_writer.ini
+# 부팅 시 자동 실행 (systemd)
+sudo deploy/install_services.sh db-writer scanner
+journalctl -u barcode-db-writer -f
+""")
+
+    doc.add_heading("4.8 사용 기술", 2)
+    table(doc, ["기술", "용도"], [
+        ["MQTT 영속 세션(clean_session=False), QoS 1", "구독자가 꺼져 있는 동안의 메시지 보관·재전달"],
+        ["SQLite (WAL, synchronous=FULL, INSERT OR IGNORE, 윈도 함수 LAG)", "원본 기록, 중복 제거, 누락 구간 계산"],
+        ["SQLite 온라인 백업 API, VACUUM", "삭제 전 백업, 파일 크기 정리"],
+        ["JSON Lines + fsync + os.replace", "보조 파일 (원자적 갱신)"],
+        ["systemd (Restart=always)", "자동 실행·재시작"],
+        ["Mosquitto autosave_on_changes", "브로커 강제 종료에도 보관 메시지 유지"],
+    ], widths=[220, 230])
+
+    doc.add_heading("4.9 테스트 결과 (Windows, 2026-10-11)", 2)
+    para(doc, "전체 148개 통과 (paho-mqtt 2.1.0, 2회 반복 실행). MQTT 관련 51개는 paho-mqtt 1.6.1에서도 통과.", bold=True)
+    table(doc, ["테스트 파일", "개수", "확인 내용"], [
+        ["test_store.py", "11", "저장·중복·충돌, 시각 변환, 상태 반영 순서, 누락 구간, 조건 조회, 삭제·백업, "
+                               "스키마 버전, 읽는 중 기록(WAL)"],
+        ["test_spool.py", "3", "기록·반영, 중간 실패 시 나머지 보존, 잘린 줄 건너뛰기"],
+        ["test_db_tool.py", "10", "조회·CSV, 삭제 미리보기·--yes·백업·전체·거부 기록, 잘못된 인자, 없는 DB 미생성"],
+        ["test_subscriber.py", "9", "분류·사칭 거부, 중복 집계, DB 잠금→보조 파일→반영, fail-stop, "
+                                    "영속 세션(꺼진 동안 20건), fail-stop 후 재전달, 실시간 DB 잠금"],
+        ["test_pipeline.py", "3", "브로커 강제 종료(새 설정 유지 / 이전 설정 유실 대조), "
+                                  "실제 프로세스 2개 강제 종료·재시작 후 outbox = DB"],
+        ["1단계 테스트", "112", "변경 없음 (설정 처리 공용화 후에도 모두 통과)"],
+    ], widths=[110, 35, 305])
+    para(doc, "주요 시나리오 결과")
+    bullets(doc, [
+        "스캐너 앱과 db-writer를 실제 프로세스로 실행하고 db-writer 1회, 스캐너 1회 강제 종료 → "
+        "outbox 23건과 DB 23건의 id가 정확히 일치, seq 1~23 빈 번호·중복 행 없음, 거부 0건, 최종 상태 offline.",
+        "db-writer와 보조 파일이 모두 기록 불가 → PUBACK 전에 멈춤 → 같은 client id로 재시작한 db-writer가 같은 메시지를 받아 저장.",
+    ])
+
+    doc.add_heading("4.10 발견한 오류와 수정", 2)
+    table(doc, ["오류", "원인", "수정"], [
+        ["보조 파일을 읽을 수 없으면 db-writer 시작이 실패하고, 재처리 스레드도 죽음",
+         "보조 파일 길이 확인(len)이 예외 처리 밖에 있었음",
+         "보조 파일 처리 전체를 예외 처리 안으로. 비상용 경로 때문에 서비스가 멈추지 않게 함"],
+        ["(설계 단계) 브로커 강제 종료 시 db-writer 몫으로 보관 중이던 메시지 유실",
+         "1단계 설정의 60초 자동 저장 — 대조 테스트로 실제 유실(10건 중 0건 남음) 확인",
+         "autosave_on_changes true + autosave_interval 1"],
+    ], widths=[150, 150, 150])
+
+    doc.add_heading("4.11 미검증 항목", 2)
+    bullets(doc, [
+        "라즈베리파이에서의 systemd 서비스 설치·자동 재시작, 실제 전원 차단 후 복구",
+        "SD카드에서의 브로커 저장(변경마다) 부하와 DB 쓰기 성능",
+        "파이 OS의 Mosquitto 버전(Bookworm은 2.0.11)에서의 설정 호환 — Windows의 2.1.2로만 검증",
+    ])
+
+    doc.add_heading("4.12 알려진 제약", 2)
+    bullets(doc, [
+        "db-writer는 하나만 실행한다. 같은 client id로 두 개를 띄우면 서로 접속을 빼앗는다.",
+        "max_queued_messages(100000)를 넘게 쌓이면 브로커가 이후 메시지를 버린다 — db-writer가 아주 오래 꺼져 있을 때만 해당.",
+        "client id를 바꾸면 이전 세션에 보관된 메시지를 받지 못한다 (30일 뒤 브로커가 정리).",
+        "스캐너 outbox를 지우고 다시 만들면 seq가 1부터 다시 시작해, 누락 구간 조회가 정확하지 않을 수 있다.",
+    ])
+
+
+def next_steps(doc):
+    doc.add_heading("5. 다음 단계", 1)
+    bullets(doc, [
         ("3단계", "UNO는 네트워크가 없으므로 파이에서 MQTT를 구독해 USB 시리얼로 전달하는 브리지를 검토"),
+        ("기말", "업무 규칙(입고·출고, 상품 정보) 추가, 바코드가 찍힌 물품을 관리하는 웹 페이지 (SQLite DB를 그대로 사용)"),
     ])
 
 
@@ -333,10 +496,12 @@ def build():
     sub.add_run(f"전공심화 4학년 2학기 프로젝트 · {DOC_VERSION}").italic = True
     table(doc, ["판", "날짜", "변경 내용"], [
         ["1단계", "2026-10-11", "환경 구성, 바코드 인식 → MQTT 발행 구현·테스트"],
+        ["2단계", "2026-10-11", "MQTT 구독 → DB 저장, 관리 도구(삭제 포함), 브로커 영속성 변경, systemd"],
     ], widths=[60, 80, 310])
     overview(doc)
     environment(doc)
     stage1(doc)
+    stage2(doc)
     next_steps(doc)
     doc.save(OUT)
     print(f"생성: {OUT}")
