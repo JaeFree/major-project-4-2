@@ -14,7 +14,7 @@ from docx.shared import Pt, RGBColor
 OUT = Path(__file__).resolve().parent / "설계서.docx"
 FONT = "맑은 고딕"
 MONO = "Consolas"
-DOC_VERSION = "3단계 완료판 (2026-10-11, 파이 OS 확정 반영 2026-10-14)"
+DOC_VERSION = "4단계 완료판 (2026-10-16, 라즈베리파이 실제 배치·대시보드 전송)"
 
 
 # ================================================================ 서식 도우미
@@ -99,23 +99,27 @@ def table(doc, header, rows, widths=None):
 # ================================================================ 내용
 def overview(doc):
     doc.add_heading("1. 개요", 1)
-    para(doc, "목표: 바코드 인식 → 라즈베리파이4(MQTT 브로커) → 데이터베이스 및 아두이노 UNO")
+    para(doc, "목표: 바코드 인식 → 라즈베리파이4(MQTT 브로커) → 데이터베이스 및 아두이노 UNO, "
+              "그리고 팀원이 만든 외부 재고 대시보드로 전송")
     para(doc, "물류창고에서 카메라로 1D 바코드(상품 EAN-13, 위치·팔레트 Code128 등)를 인식하고, "
               "MQTT로 중앙(라즈베리파이4)에 전달해 데이터베이스에 기록하며, 아두이노 UNO로 현장 표시·알림을 한다.")
     doc.add_heading("1.1 전체 구성", 2)
     code(doc, """
-[카메라] ─► 스캐너(Python, 라즈베리파이) ─► outbox(SQLite) ─► MQTT 발행 (QoS 1)
+[USB 웹캠] ─► 스캐너(Python, Windows PC) ─► outbox(SQLite) ─► MQTT 발행 (QoS 1, Wi-Fi)
                                                                   │
                                                      Mosquitto 브로커 (라즈베리파이4)
                                                                   │
                          ┌────────────────────────────────────────┴──────────────┐
                 (2단계) DB 저장 서비스 ─► 데이터베이스        (3단계) 시리얼 브리지 ─► 아두이노 UNO
+                                            │
+                (4단계) 대시보드 전송 ─► HTTPS ─► 외부 재고 대시보드 (api.oswdev.cloud)
 """)
     doc.add_heading("1.2 단계별 진행 현황", 2)
     table(doc, ["단계", "내용", "상태"], [
-        ["1단계", "바코드 인식 → MQTT 발행", "완료 (Windows 로컬 검증. 파이·카메라 실측은 미검증)"],
-        ["2단계", "MQTT 구독 → DB 저장", "완료 (Windows 로컬 검증. 파이 systemd 동작은 미검증)"],
-        ["3단계", "아두이노 UNO 연동", "완료 (Windows 로컬 검증: 컴파일·가짜 UNO. 실제 보드는 미검증)"],
+        ["1단계", "바코드 인식 → MQTT 발행", "완료. PC + USB 웹캠으로 실물 확인 (2026-10-16). Pi 카메라는 미사용"],
+        ["2단계", "MQTT 구독 → DB 저장", "완료. 라즈베리파이 실제 배치·systemd·끊김 시험 (2026-10-16)"],
+        ["3단계", "아두이노 UNO 연동", "완료 (Windows 로컬 검증: 컴파일·가짜 UNO). 중간고사에는 UNO 미사용"],
+        ["4단계", "파이 DB → 외부 재고 대시보드 전송", "완료. 실제 대시보드 입고·끊김 시험·systemd (2026-10-16)"],
     ], widths=[50, 170, 230])
 
 
@@ -124,6 +128,8 @@ def environment(doc):
     table(doc, ["구분", "내용"], [
         ["Windows 작업 PC", "코드 작성, 단위·통합 테스트, 로컬 Mosquitto 테스트, 설계서 생성. "
                             "Python 3.11.9 (D:\\Tools\\Python311), venv(.venv), requirements-dev.txt"],
+        ["스캐너 PC (학교)", "스캐너 실행 위치 (2026-10-15 결정). USB 웹캠 PCWE400(장치명 HD 4MP WEBCAM), "
+                             "USB Wi-Fi 어댑터로 아이폰 핫스팟에 연결. Python 3.12 venv (2026-10-16 다시 만듦, 테스트 전체 통과)"],
         ["라즈베리파이4", "실제 실행 환경. Raspberry Pi OS Bookworm 64비트(aarch64, Python 3.11)로 확정 (2026-10-14). "
                          "apt: picamera2·libzbar0·mosquitto / pip(venv --system-site-packages): requirements-pi.txt"],
         ["아두이노 UNO", "Arduino C++ 스케치. arduino-cli 1.5.1 + arduino:avr 1.8.8 + LiquidCrystal I2C 1.1.2 "
@@ -131,7 +137,7 @@ def environment(doc):
                         "UNO 프로토콜 코드 PC 테스트용 w64devkit g++ 16.2 (D:\\Tools\\w64devkit)"],
         ["로컬 브로커", "Mosquitto 2.1.2 (D:\\Tools\\mosquitto). Windows 서비스는 수동 시작으로 두고, "
                        "테스트가 임시 포트로 직접 실행·종료한다"],
-        ["버전 관리", "Git + GitHub 비공개 저장소 JaeFree/major-project-4-2"],
+        ["버전 관리", "Git + GitHub 저장소 JaeFree/major-project-4-2 (파이는 git pull로 코드 갱신)"],
     ], widths=[90, 360])
     para(doc, "버전 고정 이유: Bookworm의 apt picamera2는 numpy 1.x로 빌드되어 있어 venv에서 numpy<2를 유지해야 한다. "
               "opencv-python 4.12부터 numpy>=2가 필요하므로 OpenCV는 4.11.0.86으로 고정했다. "
@@ -621,11 +627,135 @@ UNO→파이  R|uno-display|1                 부팅 완료
     ])
 
 
-def next_steps(doc):
-    doc.add_heading("6. 다음 단계", 1)
+def deployment(doc):
+    doc.add_heading("6. 라즈베리파이 실제 배치 (2026-10-14 ~ 16)", 1)
+    doc.add_heading("6.1 배치 구성", 2)
+    table(doc, ["위치", "실행하는 것", "비고"], [
+        ["Windows PC (학교)", "스캐너 (scanner_app), USB 웹캠", "config/scanner.ini: camera = usb, host = a2500.local, "
+                                                               "mode = presence. 비밀번호 config/dock-01.pass"],
+        ["라즈베리파이4 (a2500)", "Mosquitto, db-writer, forwarder (systemd)", "Bookworm 64비트, ~/barcode, .venv. "
+                                                                             "로케일 en_US.UTF-8"],
+        ["네트워크", "아이폰 핫스팟 (172.20.10.x)", "PC는 유선 랜만 있어 USB Wi-Fi 어댑터로 연결. 파이 IP가 바뀔 수 있어 "
+                                                 "mDNS 이름(a2500.local) 사용. 핫스팟으로 인터넷·NTP 사용 가능"],
+    ], widths=[100, 150, 200])
+
+    doc.add_heading("6.2 배치 순서와 결과", 2)
+    table(doc, ["순서", "할 일", "결과"], [
+        ["1", "파이 IP·호스트명 확인", "a2500, 172.20.10.7"],
+        ["2", "PC → 파이 브로커 접속", "a2500.local:1883 접속 성공"],
+        ["3", "브로커 사용자 등록, db-writer 설정·실행·서비스 등록", "MQTT 연결·구독 확인, 재부팅 후 자동 실행"],
+        ["4", "PC 스캐너 설정·비밀번호 파일", "완료"],
+        ["5", "웹캠 실물 스캔 → 파이 DB", "14건 저장, scanners online, gaps 없음"],
+        ["6", "끊김 시험", "db-writer 정지 중 스캔 → 재실행 즉시 저장, PC Wi-Fi 끊김 중 스캔 → 재연결 시 저장, gaps 없음"],
+    ], widths=[35, 180, 235])
+
+    doc.add_heading("6.3 배치 중 발견한 문제와 조치", 2)
+    table(doc, ["문제", "원인", "조치"], [
+        ["카메라 앱 오류 0xA00F4244 (카메라 없음)", "웹캠이 USB 장치로 아예 감지되지 않음 (앞면 포트)",
+         "본체 뒷면 포트에 연결 → HD 4MP WEBCAM 인식"],
+        ["PC에서 venv 실행 불가 (No Python at D:\\Tools\\Python311)", "다른 PC에서 만든 .venv를 복사해 옴",
+         "학교 PC의 Python 3.12로 .venv를 다시 만듦, 전체 테스트 통과"],
+        ["흐릴 때 CODE128을 EAN8/EAN13으로 잘못 읽음 (14건 중 6건)", "OpenCV(EAN/UPC 담당)의 오인식, confirm=2도 통과",
+         "중간고사: 대시보드 전송은 CODE128만 보내 재고 영향 없음. 기말고사: 읽을 종류 설정(types) 추가 예정"],
+        ["계속 비추면 3초마다 다시 기록", "mode = interval", "PC 설정을 mode = presence로 변경 (대시보드 재고 중복 방지)"],
+    ], widths=[150, 150, 150])
+
+
+def stage4(doc):
+    doc.add_heading("7. 4단계: 파이 DB → 외부 재고 대시보드 전송", 1)
+
+    doc.add_heading("7.1 대시보드 API (팀원 제작, 수정하지 않음)", 2)
+    para(doc, "대시보드: https://dashboard.oswdev.cloud/ , 저장소 github.com/ohdongE/ErpSystem (Express + Firestore). "
+              "대시보드는 최대한 수정하지 않기로 해 기존 API에 맞췄다.")
+    table(doc, ["API", "내용"], [
+        ["POST /api/scan", "JSON {barcode, deviceId, timestamp} (모두 필수), 인증 없음 → {ok, barcode, transactionId}. "
+                           "받을 때마다 재고 +1, 입고(IN) 이력 1건. 처음 보는 바코드는 상품 자동 생성"],
+        ["GET /api/products/<바코드>/transactions", "그 상품의 최근 이력 50건 (timestamp 내림차순)"],
+        ["주의", "서버에 중복 방지가 없다 → 같은 스캔을 두 번 보내면 재고가 두 번 오른다. "
+                 "바코드가 Firestore 문서 ID라 '/'가 들어간 값은 쓸 수 없다"],
+    ], widths=[150, 300])
+
+    doc.add_heading("7.2 구현한 기능", 2)
     bullets(doc, [
-        ("하드웨어 검증", "카메라·파이·UNO를 갖추면 docs/미검증.md 순서대로 확인하고 결과를 기록"),
+        "파이 DB(barcodes.db)를 읽기 전용으로 붙여, 새로 저장된 CODE128 스캔을 한 건씩 받은 순서대로 전송",
+        "보낸 기록은 별도 DB(data/forwarder.db)에 남김 → db-writer의 DB 구조(스키마 버전 1)는 바꾸지 않음",
+        "재고 중복 방지: 보내기 직전 'sending' 기록 → 성공 응답이면 'sent'. 응답이 없었던 건(연결 끊김·시간 초과·5xx·"
+        "프로그램 중단)은 다시 보내기 전에 대시보드 이력에서 같은 deviceId+timestamp를 찾아, 있으면 보내지 않음",
+        "앞의 건이 해결되기 전에는 다음 건으로 넘어가지 않음 → 확인할 이력이 항상 최근 50건 안에 있음",
+        "처음 실행 이후 받은 스캔만 전송 (send_existing = false) → 그동안의 시험 기록이 재고에 들어가지 않음",
+        "400 응답은 다시 보내지 않고 'failed'로 기록, '/' 등 쓸 수 없는 바코드는 'skipped'",
+        "오류 시 2초부터 두 배씩 최대 60초 간격으로 재시도, --status로 전송 기록 조회, --once로 한 번만 실행",
+    ])
+
+    doc.add_heading("7.3 구성 파일", 2)
+    table(doc, ["파일", "역할"], [
+        ["barcode_system/dashboard_forwarder.py", "API 클라이언트(urllib), 전송 기록(ForwardState), 전송 루프(Forwarder)"],
+        ["barcode_system/forwarder_app.py", "실행 프로그램 (설정, --once, --status)"],
+        ["config/forwarder.example.ini", "API 주소, 보낼 종류(CODE128), deviceId(비우면 스캐너 ID), send_existing, DB 경로"],
+        ["deploy/systemd/barcode-forwarder.service", "부팅 시 자동 실행, 실패 시 10초 뒤 재시작"],
+        ["tests/test_forwarder.py", "가짜 대시보드 서버로 정상·장애 시험 25개"],
+    ], widths=[190, 260])
+
+    doc.add_heading("7.4 보내는 값", 2)
+    table(doc, ["필드", "값"], [
+        ["barcode", "스캔한 바코드 값 (CODE128)"],
+        ["deviceId", "스캐너 ID (dock-01)"],
+        ["timestamp", "스캔 시각을 UTC 밀리초 'Z' 형식으로 (예: 2026-10-16T03:00:56.400Z). 스캔마다 값이 달라 이력 확인에 쓴다. "
+                      "대시보드의 기존 형식(2026-08-28T09:00:00Z)과 같은 방식이라 화면 표시·정렬에 문제 없음"],
+    ], widths=[80, 370])
+
+    doc.add_heading("7.5 설정과 실행", 2)
+    code(doc, r"""
+# 파이
+cd ~/barcode && git pull
+cp config/forwarder.example.ini config/forwarder.ini
+python -m barcode_system.forwarder_app --config config/forwarder.ini      # 직접 실행
+python -m barcode_system.forwarder_app --config config/forwarder.ini --status
+sudo bash deploy/install_services.sh forwarder                              # 자동 실행
+journalctl -u barcode-forwarder -f
+""")
+
+    doc.add_heading("7.6 사용 기술", 2)
+    table(doc, ["기술", "용도"], [
+        ["HTTPS + JSON (Python 표준 urllib)", "대시보드 API 호출. 파이에 새 패키지를 설치하지 않음"],
+        ["SQLite ATTACH (mode=ro), WAL", "db-writer가 쓰는 동안 읽기 전용으로 함께 조회"],
+        ["상태 기록 + 이력 확인 후 재전송", "중복 방지 기능이 없는 서버에 '정확히 한 번'에 가깝게 전송"],
+        ["systemd (Restart=always)", "자동 실행·재시작"],
+    ], widths=[200, 250])
+
+    doc.add_heading("7.7 테스트 결과", 2)
+    para(doc, "Windows: 전체 182개 통과(24개는 이 PC에서 건너뜀), 그중 4단계 25개 (2026-10-16).", bold=True)
+    table(doc, ["시험", "결과"], [
+        ["가짜 서버: 새 CODE128만 전송, EAN·처음 실행 전 기록 제외, deviceId·종류 설정", "통과"],
+        ["가짜 서버: 503 후 복구, 기록 후 연결 끊김, 기록 후 시간 초과, 이력 조회 실패 후 복구", "모두 재고 1 (중복 없음)"],
+        ["가짜 서버: 'sending' 상태로 재시작 (서버에 있음/없음), 400 거부, '/' 바코드", "통과"],
+        ["실제 대시보드: Apple123 1회, pants2 2회 스캔", "재고 1·2, 이력 수와 일치 (2026-10-16)"],
+        ["실제: 아이폰 셀룰러 데이터를 끈 채 스캔 → 복구", "재전송, 재고 중복 없음"],
+        ["실제: systemd 등록 후 재부팅", "mosquitto·db-writer·forwarder 자동 실행"],
+    ], widths=[300, 150])
+
+    doc.add_heading("7.8 발견한 오류와 수정", 2)
+    table(doc, ["오류", "원인", "수정"], [
+        ["실제 API 호출이 403 (Cloudflare Error 1010)", "대시보드 앞단 Cloudflare가 urllib 기본 User-Agent(Python-urllib)를 막음",
+         "User-Agent를 barcode-forwarder/1.0으로 지정. 가짜 서버 테스트에서 User-Agent도 확인"],
+    ], widths=[150, 170, 130])
+
+    doc.add_heading("7.9 알려진 제약", 2)
+    bullets(doc, [
+        "대시보드 이력 조회가 최근 50건만 돌려줘, 결과를 모르는 건보다 늦은 이력이 그 상품에 50건 넘게 쌓이면 못 찾고 "
+        "다시 보낼 수 있다 (한 건씩 순서대로 보내 거의 생기지 않음).",
+        "앞의 건이 계속 실패하면 뒤의 건도 기다린다 (순서와 중복 방지를 우선).",
+        "대시보드는 입고(+1)만 지원한다. 출고는 대시보드가 mode 필드 등을 지원하면 추가.",
+        "forwarder.db를 지우면 '처음 실행'으로 보고 그 시각 이후만 보낸다.",
+    ])
+
+
+def next_steps(doc):
+    doc.add_heading("8. 다음 단계", 1)
+    bullets(doc, [
+        ("기말: 잘못 읽음 대책", "스캐너에 읽을 바코드 종류 설정(types = CODE128) 추가, 단위 테스트와 웹캠 실측"),
         ("기말", "업무 규칙(입고·출고, 상품 정보) 추가, 바코드가 찍힌 물품을 관리하는 웹 페이지 (SQLite DB를 그대로 사용)"),
+        ("하드웨어 검증", "UNO 등 남은 항목은 docs/미검증.md 순서대로 확인하고 결과를 기록"),
     ])
 
 
@@ -642,12 +772,15 @@ def build():
         ["1단계", "2026-10-11", "환경 구성, 바코드 인식 → MQTT 발행 구현·테스트"],
         ["2단계", "2026-10-11", "MQTT 구독 → DB 저장, 관리 도구(삭제 포함), 브로커 영속성 변경, systemd"],
         ["3단계", "2026-10-11", "UNO 연동(시리얼 브리지, 스케치, 프로토콜), DB 저장 결과 발행, 미검증 목록(docs/미검증.md)"],
+        ["배치·4단계", "2026-10-16", "라즈베리파이 실제 배치(스캐너는 PC), 외부 재고 대시보드 전송(forwarder)"],
     ], widths=[60, 80, 310])
     overview(doc)
     environment(doc)
     stage1(doc)
     stage2(doc)
     stage3(doc)
+    deployment(doc)
+    stage4(doc)
     next_steps(doc)
     doc.save(OUT)
     print(f"생성: {OUT}")
