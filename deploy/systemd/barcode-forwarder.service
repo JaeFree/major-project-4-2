@@ -1,0 +1,21 @@
+# 파이 DB → 외부 재고 대시보드 전송 서비스 (4단계)
+# deploy/install_services.sh 가 @USER@ / @DIR@ 을 바꿔 /etc/systemd/system/ 에 설치한다.
+[Unit]
+Description=Barcode system - SQLite to dashboard forwarder
+After=network-online.target barcode-db-writer.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/.venv/bin/python -m barcode_system.forwarder_app --config config/forwarder.ini
+# 스캔 DB가 아직 없을 때(db-writer 첫 실행 전) 등 시작 실패 시 10초 뒤 재시작
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
