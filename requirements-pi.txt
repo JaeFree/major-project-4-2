@@ -1,5 +1,5 @@
 # 라즈베리파이4 실행용 — pip로 설치할 항목만 이 파일에 둔다.
-# 파이 OS가 아직 정해지지 않아 Bookworm(Python 3.11) 기준으로 작성. OS 확정 후 수정한다.
+# 파이 OS: Raspberry Pi OS Bookworm 64비트(aarch64, Python 3.11)로 확정 (2026-10-14).
 #
 # [1] apt 설치 (시스템 라이브러리와 묶인 패키지는 반드시 apt로)
 #   sudo apt update

@@ -14,7 +14,7 @@ from docx.shared import Pt, RGBColor
 OUT = Path(__file__).resolve().parent / "설계서.docx"
 FONT = "맑은 고딕"
 MONO = "Consolas"
-DOC_VERSION = "3단계 완료판 (2026-10-11)"
+DOC_VERSION = "3단계 완료판 (2026-10-11, 파이 OS 확정 반영 2026-10-14)"
 
 
 # ================================================================ 서식 도우미
@@ -124,7 +124,7 @@ def environment(doc):
     table(doc, ["구분", "내용"], [
         ["Windows 작업 PC", "코드 작성, 단위·통합 테스트, 로컬 Mosquitto 테스트, 설계서 생성. "
                             "Python 3.11.9 (D:\\Tools\\Python311), venv(.venv), requirements-dev.txt"],
-        ["라즈베리파이4", "실제 실행 환경. OS 미정 → Bookworm(Python 3.11) 기준으로 작성. "
+        ["라즈베리파이4", "실제 실행 환경. Raspberry Pi OS Bookworm 64비트(aarch64, Python 3.11)로 확정 (2026-10-14). "
                          "apt: picamera2·libzbar0·mosquitto / pip(venv --system-site-packages): requirements-pi.txt"],
         ["아두이노 UNO", "Arduino C++ 스케치. arduino-cli 1.5.1 + arduino:avr 1.8.8 + LiquidCrystal I2C 1.1.2 "
                         "(sketch.yaml 프로필). CH340/CH341 호환보드 예정. "
